@@ -6,7 +6,6 @@ from datetime import datetime
 import torch.nn as nn
 from nvidia_blocks import *
 
-
 class BaseModel(nn.Module, ABC):
     def __init__(self):
         super().__init__()
@@ -56,7 +55,7 @@ class BaseModel(nn.Module, ABC):
         self.outChannels = 1
         self.model_depth = 4
         self.intermediate_vec = intermediate_vec
-        self.use_cuda = kwargs.get('cuda')
+        self.use_cuda = kwargs.get('gpu') #'cuda'
         self.shapes = kwargs.get('shapes')
 
 
@@ -82,8 +81,8 @@ class BaseModel(nn.Module, ABC):
             if not was_loaded:
                 print('notice: named parameter - {} is randomly initialized'.format(name))
 
-
-    def save_checkpoint(self, directory, title, epoch, loss,accuracy, optimizer=None,schedule=None):
+    # 찾았다! 는 last epoch만 저장하는 코드였음 ^^
+    def save_checkpoint(self, directory, title, epoch, loss, accuracy, optimizer=None,schedule=None):
         # Create directory to save to
         if not os.path.exists(directory):
             os.makedirs(directory)
@@ -101,11 +100,19 @@ class BaseModel(nn.Module, ABC):
             ckpt_dict['lr'] = schedule.get_last_lr()[0]
         if hasattr(self,'loaded_model_weights_path'):
             ckpt_dict['loaded_model_weights_path'] = self.loaded_model_weights_path
-
+        
+        # Save checkpoint per one epoch - 아직 one epoch도 못 돌았음. 이거 하는 거 의미 없음^%^
+        # core_name = title
+        # print('saving ckpt of {}_epoch'.format(epoch))
+        # name = "{}_epoch_{}.pth".format(core_name, epoch)
+        # torch.save(ckpt_dict, os.path.join(directory, name))
+        
         # Save the file with specific name
         core_name = title
-        name = "{}_last_epoch.pth".format(core_name)
-        torch.save(ckpt_dict, os.path.join(directory, name))
+        name = "{}_last_epoch.pth".format(core_name) # (2) 아... last epoch에서만 저장이..되는거야..?^^..?
+        torch.save(ckpt_dict, os.path.join(directory, name)) # (1) 그래서 이 last epoch 모델이 왜 experiments 디렉토리에 저장이 안 되냐 이거지
+        
+        # best loss나 best accuracy를 가진 모델만 저장하는 코드
         if self.best_loss > loss:
             self.best_loss = loss
             name = "{}_BEST_val_loss.pth".format(core_name)
@@ -249,11 +256,15 @@ class Transformer_Block(BertPreTrainedModel, BaseModel):
         self.bert = BertModel(self.BertConfig, add_pooling_layer=self.cls_pooling)
         self.init_weights()
         self.cls_embedding = nn.Sequential(nn.Linear(self.BertConfig.hidden_size, self.BertConfig.hidden_size), nn.LeakyReLU())
-        self.register_buffer('cls_id', torch.ones((kwargs.get('batch_size'), 1, self.BertConfig.hidden_size)) * 0.5,persistent=False)
+        
 
 
     def concatenate_cls(self, x):
-        cls_token = self.cls_embedding(self.cls_id)
+        self.register_buffer('cls_id', (torch.ones((x.size()[0], 1, self.BertConfig.hidden_size)) * 0.5),persistent=False)
+        cls_token = self.cls_embedding(self.cls_id.to(x.get_device()))
+        # print('Size of cls_token: ', cls_token.size())
+        # print('Size of cls_id: ', self.cls_id.size())
+        # print('Size of x: ', x.size())
         return torch.cat([cls_token, x], dim=1)
 
 
@@ -301,7 +312,11 @@ class Encoder_Transformer_Decoder(BaseModel):
 
     def forward(self, x):
         batch_size, inChannels, W, H, D, T = x.shape
+        
+        print('shape of x:', x.size()) #여기서 1이 나옴..
+        
         x = x.permute(0, 5, 1, 2, 3, 4).reshape(batch_size * T, inChannels, W, H, D)
+        
         encoded = self.encoder(x)
         encoded = self.into_bert(encoded)
         encoded = encoded.reshape(batch_size, T, -1)

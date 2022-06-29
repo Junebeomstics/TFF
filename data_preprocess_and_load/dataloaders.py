@@ -1,18 +1,30 @@
 import numpy as np
-from torch.utils.data import DataLoader,Subset
+import torch
+from torch.utils.data import DataLoader,Subset, Dataset, RandomSampler
+
+#DDP
+from torch.utils.data.distributed import DistributedSampler
 from data_preprocess_and_load.datasets import *
 from utils import reproducibility
+import os
+
+
+# for data parallel
+# torch.distributed.init_process_group(
+#      backend='nccl', world_size=4, rank=int(os.environ["LOCAL_RANK"]), store=None)
 
 class DataHandler():
     def __init__(self,test=False,**kwargs):
         self.test = test
         self.kwargs = kwargs
         self.dataset_name = kwargs.get('dataset_name')
+        self.num_val_samples = kwargs.get('num_val_samples')
         self.splits_folder = Path(kwargs.get('base_path')).joinpath('splits',self.dataset_name)
         self.splits_folder.mkdir(exist_ok=True)
         self.seed = kwargs.get('seed')
         self.current_split = self.splits_folder.joinpath('seed_{}.txt'.format(self.seed))
-
+    
+    #여기에 데이터셋 추가하면 됨.
     def get_dataset(self):
         if self.dataset_name == 'S1200':
             return rest_1200_3D
@@ -22,12 +34,12 @@ class DataHandler():
             raise NotImplementedError
 
     def current_split_exists(self):
-        return self.current_split.exists()
+        return self.current_split.exists() # 해당 폴더가 존재하는지 확인
 
     def create_dataloaders(self):
-        reproducibility(**self.kwargs)
-        dataset = self.get_dataset()
-        train_loader = dataset(**self.kwargs)
+        reproducibility(**self.kwargs) #reproducibility를 위한 여러 설정을 위한 함수
+        dataset = self.get_dataset() # self.dataset_name에 의해 결정
+        train_loader = dataset(**self.kwargs) #이름은 loader이나 실제론 dataset class
         eval_loader = dataset(**self.kwargs)
         eval_loader.augment = None
         self.subject_list = train_loader.index_l
@@ -37,16 +49,43 @@ class DataHandler():
         else:
             train_idx,val_idx,test_idx = self.determine_split_randomly(self.subject_list,**self.kwargs)
 
-        # train_idx = [train_idx[x] for x in torch.randperm(len(train_idx))[:10]]
-        # val_idx = [val_idx[x] for x in torch.randperm(len(val_idx))[:10]]
-
+        # train_idx = [train_idx[x] for x in torch.randperm(len(train_idx))[:1000]]
+        # val_idx = [val_idx[x] for x in torch.randperm(len(val_idx))[:1000]]
+        
+        ## restrict to 1000 datasets
+        #val_idx = list(np.random.choice(len(val_idx), self.num_val_samples, replace=False))
+        
+        #index를 통해 dataset의 일부를 가져오고싶을때 Subset 사용
+        print('length of train_idx:', len(train_idx)) #900984
+        print('length of val_idx:', len(val_idx)) #192473 -> 1000
+        print('length of test_idx:', len(test_idx)) #194774
+        
         train_loader = Subset(train_loader, train_idx)
         val_loader = Subset(eval_loader, val_idx)
         test_loader = Subset(eval_loader, test_idx)
-
-        training_generator = DataLoader(train_loader, **self.get_params(**self.kwargs))
-        val_generator = DataLoader(val_loader, **self.get_params(eval=True,**self.kwargs))
-        test_generator = DataLoader(test_loader, **self.get_params(eval=True,**self.kwargs))  if self.test else None
+        
+        if self.kwargs.get('distributed'):
+            train_sampler = DistributedSampler(train_loader , shuffle=True)
+            valid_sampler = DistributedSampler(val_loader, shuffle=True)
+            test_sampler = DistributedSampler(test_loader, shuffle=True)
+        else:
+            train_sampler = RandomSampler(train_loader)
+            valid_sampler = RandomSampler(val_loader)
+            test_sampler = RandomSampler(test_loader)
+        
+        
+        
+        ## Stella transformed this part ##
+        training_generator = DataLoader(train_loader, **self.get_params(**self.kwargs),
+                                       sampler=train_sampler)
+        
+        val_generator = DataLoader(val_loader, **self.get_params(eval=True,**self.kwargs),
+                                  sampler=valid_sampler)
+        
+        test_generator = DataLoader(test_loader, **self.get_params(eval=True,**self.kwargs),
+                                   sampler=test_sampler) if self.test else None
+        
+        
         return training_generator, val_generator, test_generator
 
 
@@ -57,7 +96,7 @@ class DataHandler():
         if eval:
             workers = 0
         params = {'batch_size': batch_size,
-                  'shuffle': True,
+                  #'shuffle': True,
                   'num_workers': workers,
                   'drop_last': True,
                   'pin_memory': False,  # True if cuda else False,

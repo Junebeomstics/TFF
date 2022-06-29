@@ -10,7 +10,7 @@ from metrics import Metrics
 
 class Writer():
     """
-    main class to handle logging the results, both to tensorboard and to a local csv file
+    main class to handle logging the results, both to tensorboard and to a local csv file # so where is csv file..^^?
     """
     def __init__(self,sets,**kwargs):
         self.register_args(**kwargs)
@@ -34,10 +34,10 @@ class Writer():
     def create_score_folders(self):
         self.tensorboard_dir = Path(os.path.join(self.log_dir, self.experiment_title))
         self.csv_path = os.path.join(self.experiment_folder, 'history')
-        os.makedirs(self.csv_path)
+        os.makedirs(self.csv_path, exist_ok=True)
         if self.task == 'fine_tune':
             self.per_subject_predictions = os.path.join(self.experiment_folder, 'per_subject_predictions')
-            os.makedirs(self.per_subject_predictions)
+            os.makedirs(self.per_subject_predictions, exist_ok=True)
 
     def save_history_to_csv(self):
         rows = [getattr(self, x) for x in dir(self) if 'history' in x and isinstance(getattr(self, x), list)]
@@ -92,7 +92,7 @@ class Writer():
                 metrics[name + '_AUROC'] = self.metrics.AUROC(truth,pred)
 
         for name,value in metrics.items():
-            self.scalar_to_tensorboard(name,value)
+            self.scalar_to_tensorboard(name,value) #여기서 tf events 파일이 오는구나?^^
             if hasattr(self,name):
                 l = getattr(self,name)
                 l.append(value)
@@ -110,6 +110,7 @@ class Writer():
     def write_losses(self,final_loss_dict,set):
         for loss_name,loss_value in final_loss_dict.items():
             title = loss_name + '_' + set
+            #print('title of write_losses is:', title) #이게 validation 48118개에서 하나씩 계속 계산됨.
             loss_values_list = getattr(self,title + '_loss_values')
             loss_values_list.append(loss_value)
             if set == 'train':
